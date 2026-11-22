@@ -8,3 +8,4 @@ projects/*/test/
 projects/*/src/
 __pycache__/
 projects/*/stills/
+projects/*/src

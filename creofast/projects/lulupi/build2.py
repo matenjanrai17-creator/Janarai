@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 import build as B
 from build import R, fx, P, FF, W, H, FPS, TMP, OUT, READY, META, NB, run
-from script import creative, KEYS, FACTS, HOOKS
+from script import creative, KEYS, FACTS, HOOKS, EXTRAS
 import music
 
 EMO_FONT = ImageFont.truetype('/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf', 109)
@@ -154,6 +154,88 @@ def zoom(fr, s, cx=0.5, cy=0.5, dx=0, rot=0.0):
     M = cv2.getRotationMatrix2D((W * cx, H * cy), rot, s); M[0, 2] += dx
     return cv2.warpAffine(fr, M, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
 
+
+# ---------- v3: референс элементтері ----------
+from mediapipe.tasks.python import vision as _mpv, BaseOptions as _mpBO
+import mediapipe as _mp
+_SEG = None
+def person_mask(fr):
+    global _SEG
+    if _SEG is None:
+        _SEG = _mpv.ImageSegmenter.create_from_options(_mpv.ImageSegmenterOptions(
+            base_options=_mpBO(model_asset_path=os.path.expanduser('~/creofast-kit/models/selfie_multiclass.tflite')),
+            running_mode=_mpv.RunningMode.IMAGE, output_confidence_masks=True))
+    sm = cv2.resize(fr, (360, 640), interpolation=cv2.INTER_AREA)
+    r = _SEG.segment(_mp.Image(image_format=_mp.ImageFormat.SRGB, data=np.ascontiguousarray(sm)))
+    p = 1 - r.confidence_masks[0].numpy_view()
+    m = np.clip((p - 0.35) / 0.35, 0, 1).astype(np.float32)
+    m = cv2.GaussianBlur(cv2.resize(m, (W, H), interpolation=cv2.INTER_LINEAR), (9, 9), 0)
+    return m[..., None]
+
+_bg = {}
+def big_line(txt, size_max=250):
+    if (txt, size_max) in _bg: return _bg[(txt, size_max)]
+    for size in range(size_max, 80, -6):
+        f = R.font('Black', size)
+        if f.getlength(txt) <= 1000: break
+    tw = int(f.getlength(txt)); im = Image.new('RGBA', (tw + 80, size + 90), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
+    from PIL import ImageFilter
+    sh = Image.new('RGBA', im.size, (0, 0, 0, 0)); ImageDraw.Draw(sh).text((40, 38), txt, font=f, fill=(0, 0, 0, 170))
+    im.alpha_composite(sh.filter(ImageFilter.GaussianBlur(12)))
+    d.text((40, 24), txt, font=f, fill=YEL + (255,), stroke_width=4, stroke_fill=(150, 90, 0))
+    _bg[(txt, size_max)] = im; return im
+
+def pill(txt, size=40, fill=(0, 0, 0, 150), col=WHITE):
+    f = R.font('Bold', size); d0 = ImageDraw.Draw(Image.new('RGB', (8, 8)))
+    w = int(d0.textlength(txt, font=f) + 56); h = size + 30
+    im = Image.new('RGBA', (w, h), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
+    d.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2, fill=fill)
+    d.text((w / 2, h / 2), txt, font=f, fill=col, anchor='mm'); return im
+
+_ck = {}
+def checklist(lang, items, n_on):
+    key = (lang, tuple(items), n_on)
+    if key in _ck: return _ck[key]
+    head = 'ВХОДИТ В СТОИМОСТЬ' if lang == 'ru' else 'БАҒАСЫНА КІРЕДІ'
+    W_, rowh = 900, 96; rows = (len(items) + 1) // 2; H_ = 120 + rows * rowh + 20
+    card = fx.rgba_card(W_, H_, (255, 255, 255, 250), 34); d = ImageDraw.Draw(card)
+    d.text((W_ / 2, 62), head, font=R.font('ExtraBold', 46), fill=RED, anchor='mm')
+    f = R.font('Bold', 44)
+    for i, it in enumerate(items):
+        cx = 40 + (i % 2) * (W_ // 2); cy = 120 + (i // 2) * rowh + rowh / 2
+        on = i < n_on
+        d.rounded_rectangle((cx - 4, cy - 38, cx + W_ // 2 - 44, cy + 38), radius=20, fill=(255, 236, 236) if on else (243, 243, 243))
+        d.ellipse((cx + 10, cy - 24, cx + 58, cy + 24), fill=RED if on else (200, 200, 200))
+        if on: d.line([(cx + 21, cy + 1), (cx + 31, cy + 12), (cx + 48, cy - 10)], fill=WHITE, width=7)
+        d.text((cx + 76, cy), it, font=f, fill=(17, 17, 17) if on else (160, 160, 160), anchor='lm')
+    _ck[key] = fx.shadowed(card, 34); return _ck[key]
+
+def bubble(txt, right=False):
+    f = R.font('Bold', 44); d0 = ImageDraw.Draw(Image.new('RGB', (8, 8)))
+    w = int(d0.textlength(txt, font=f) + 70); h = 100
+    im = Image.new('RGBA', (w + 20, h + 30), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
+    d.rounded_rectangle((10, 0, w + 10, h), radius=40, fill=(255, 255, 255, 250))
+    tx = w - 30 if right else 50
+    d.polygon([(tx, h - 2), (tx + (20 if right else -20), h + 26), (tx + (-30 if right else 30), h - 2)], fill=(255, 255, 255, 250))
+    d.text((10 + w / 2, h / 2), txt, font=f, fill=(17, 17, 17), anchor='mm')
+    return fx.shadowed(im, 40, 20, 90)
+
+def rec_frame(fr, t):
+    c, L, th, m = (255, 255, 255), 90, 7, 70
+    for (x, y, sx, sy) in [(m, 150, 1, 1), (W - m, 150, -1, 1), (m, H - 330, 1, -1), (W - m, H - 330, -1, -1)]:
+        cv2.line(fr, (x, y), (x + sx * L, y), c, th); cv2.line(fr, (x, y), (x, y + sy * L), c, th)
+    if int(t * 2) % 2 == 0: cv2.circle(fr, (m + 40, 215), 14, (227, 6, 19), -1)
+    tc = f'REC  00:00:{int(t):02d}:{int((t % 1) * 30):02d}'
+    im = Image.new('RGBA', (560, 60), (0, 0, 0, 0)); ImageDraw.Draw(im).text((0, 30), tc, font=R.font('Bold', 38), fill=WHITE, anchor='lm', stroke_width=2, stroke_fill=(0, 0, 0))
+    fx.paste(fr, im, m + 70 + 280, 215)
+    im2 = Image.new('RGBA', (220, 60), (0, 0, 0, 0)); ImageDraw.Draw(im2).text((220, 30), '4K · 30', font=R.font('Bold', 38), fill=WHITE, anchor='rm', stroke_width=2, stroke_fill=(0, 0, 0))
+    fx.paste(fr, im2, W - m - 40 - 110, 215)
+
+QUEST = {'ru': ['Где хороший сад рядом?', 'А чем там кормят?', 'Есть английский?'],
+         'kk': ['Жақын жерде жақсы бақша бар ма?', 'Тамағы қандай?', 'Ағылшын тілі бар ма?']}
+EXTRA_ITEMS = {'ru': ['Английский', 'Тхэквондо', 'Балет', 'Танцы', 'Йога'], 'kk': ['Ағылшын', 'Тхэквондо', 'Балет', 'Би', 'Йога']}
+BIG_Y = 800
+
 TRANS = ['punch', 'whip', 'flash', 'spin', 'punch', 'whip']
 
 # ---------- бір креатив ----------
@@ -161,6 +243,7 @@ def build(lang, body, hook, test=None, plan_only=False):
     cid = f'{lang.upper()}{body}_H{hook}'
     phrases, seg = creative(lang, body, hook)
     hk = HOOKS[lang][hook]
+    EXTRAS_TXT = EXTRAS[lang][0]
     rnd = random.Random(zlib.crc32(('v2' + cid).encode()))
     t, auds = 0.15, []
     for ph in phrases:
@@ -233,19 +316,35 @@ def build(lang, body, hook, test=None, plan_only=False):
     nhw = len(hook_txt.split(' '))
     hook_end = max(R.HOOK_T, phrases[0]['t1'] + 0.4)
     hook_dur_words = max(0.6, phrases[0]['t1'] - phrases[0]['t0'])
-    # стикерлер
-    stick = []
+    # стикерлер / үлкен мәтін (адам артында) / чек-лист
+    stick, bigs, checks = [], [], []
+    def wtime(ph, word):
+        ws = ph['text'].split(); lens = np.cumsum([0] + [len(w) + 1 for w in ws])
+        for j, w in enumerate(ws):
+            if word.lower() in w.lower(): return ph['t0'] + (ph['t1'] - ph['t0']) * lens[j] / lens[-1]
+        return None
     for ph in phrases:
-        st = ph.get('st')
-        if not st: continue
-        if st[0] == 'stat': stick.append(('stat', ph['t0'] + 0.1, ph['t1'] + 0.5, fx.stat_img(st[1], st[2])))
-        elif st[0] == 'addr': stick.append(('stat', ph['t0'] + 0.1, ph['t1'] + 0.5, fx.stat_img('Мамыр-4, 156', 'г. Алматы' if lang == 'ru' else 'Алматы қ.')))
-        elif st[0] == 'price': stick.append(('price', ph['t0'] + 0.05, ph['t1'] + 0.6, None))
+        st = ph.get('st'); txt = ph['text']
+        if ph.get('hook') or ph.get('cta'): continue
+        if st and st[0] == 'price': stick.append(('price', ph['t0'] + 0.05, ph['t1'] + 0.6, None)); continue
+        if st and st[0] == 'stat': bigs.append((ph['t0'] + 0.05, ph['t1'] + 0.35, [(st[1], ph['t0'] + 0.05)], st[2]))
+        elif st and st[0] == 'addr': bigs.append((ph['t0'] + 0.05, ph['t1'] + 0.35, [('МАМЫР-4', wtime(ph, 'Мамыр') or ph['t0'])], 'г. Алматы, 156' if lang == 'ru' else 'Алматы қ., 156'))
+        elif any(g in txt for g in ('QADAM', 'JUNIOR', 'SENIOR')):
+            ls = [(g, wtime(ph, g) or ph['t0']) for g in ('QADAM', 'JUNIOR', 'SENIOR') if g in txt]
+            bigs.append((ph['t0'] + 0.05, ph['t1'] + 0.35, ls, None))
+        elif 'Montessori' in txt:
+            bigs.append((wtime(ph, 'Montessori') or ph['t0'], ph['t1'] + 0.35, [('MONTESSORI', wtime(ph, 'Montessori') or ph['t0'])],
+                         '+ традиционные занятия' if lang == 'ru' else '+ дәстүрлі сабақтар'))
+        if txt == EXTRAS_TXT:
+            its = EXTRA_ITEMS[lang]; keys = ['Англ', 'тхэкв', 'балет', 'танц', 'йога'] if lang == 'ru' else ['Ағылш', 'тхэкв', 'балет', 'би', 'йога']
+            tms = [wtime(ph, k_) or ph['t0'] for k_ in keys]
+            checks.append((ph['t0'] - 0.05, ph['t1'] + 0.5, its, tms))
     # эмодзи: әр жаңа санат сегментінде (хуктан кейін, CTA дейін)
     emos, last = [], None
     for a, b, c, cat in segs:
         if cat and a >= hook_end - 0.1 and a < cta['t0'] - 0.2 and cat in EMOJI and EMOJI[cat] != last:
             emos.append((a, b, emoji_img(EMOJI[cat]))); last = EMOJI[cat]
+    hdr = pill('LULUPI KIDS · ' + ('МАМЫР-4' if True else ''), 36)
     hook_emo = emoji_img(hk.get('emoji', '👀'), 120)
     grad, title, btn, addr = end_layers(lang)
     confetti = [(rnd.uniform(80, 1000), rnd.uniform(-300, 0), rnd.uniform(-160, 160), rnd.uniform(500, 1100),
@@ -269,8 +368,49 @@ def build(lang, body, hook, test=None, plan_only=False):
         fr = np.ascontiguousarray(fr)
         if k > 0 and lt < 0.12 and TRANS[k % len(TRANS)] == 'flash':
             al = 0.85 * (1 - lt / 0.12); fr[:] = (fr * (1 - al) + 255 * al).astype(np.uint8)
+        actb = [x for x in bigs if x[0] <= t < min(x[1], cta['t0'] - 0.05)]
+        if actb:
+            orig = fr.copy(); lay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+            for s0, s1, ls, cap in actb:
+                out = max(0.0, min(1.0, (min(s1, cta['t0'] - 0.05) - t) / 0.15))
+                ims = [big_line(x, 250 if len(ls) == 1 else 185) for x, _ in ls]
+                tot_h = sum(i.height - 40 for i in ims); y = BIG_Y - tot_h / 2
+                for (x, t_), im in zip(ls, ims):
+                    if t >= t_ - 0.05:
+                        u = (t - t_ + 0.05) / 0.25; sc = (1.35 - 0.35 * ease(u)) * out
+                        if sc > 0.02:
+                            im2 = im.resize((max(1, int(im.width * sc)), max(1, int(im.height * sc))), Image.BILINEAR)
+                            a = im2.getchannel('A').point(lambda v, k_=min(1, u * 2): int(v * k_)); im2.putalpha(a)
+                            lay.alpha_composite(im2, (int(W / 2 - im2.width / 2), int(y + (im.height - 40) / 2 - im2.height / 2)))
+                    y += im.height - 40
+            arr = np.asarray(lay).astype(np.float32); al = arr[..., 3:] / 255
+            fr = (fr * (1 - al) + arr[..., :3] * al)
+            m = person_mask(orig)
+            fr = (orig * m + fr * (1 - m)).astype(np.uint8)
+            for s0, s1, ls, cap in actb:
+                if cap and t > s0 + 0.25:
+                    out = max(0.0, min(1.0, (min(s1, cta['t0'] - 0.05) - t) / 0.15))
+                    tot_h = sum(big_line(x, 250 if len(ls) == 1 else 185).height - 40 for x, _ in ls)
+                    paste(fr, pill(cap, 42, (227, 6, 19, 235)), W / 2, BIG_Y + tot_h / 2 + 50, back((t - s0 - 0.25) / 0.3) * out)
+        if t < hook_end and hook in (1, 5): rec_frame(fr, t)
         # прогресс жолағы
         fr[0:10, :int(W * t / total)] = RED
+        if t < cta['t0'] - 0.05: paste(fr, hdr, W / 2, 95, 1.0, alpha=0.95)
+        if hook == 2 and t < hook_end:
+            qs = QUEST[lang]; d0 = phrases[0]['t1'] - phrases[0]['t0']
+            for qi, q in enumerate(qs):
+                tq = 0.35 + qi * max(0.45, d0 / 3.2)
+                if t >= tq:
+                    sc = back((t - tq) / 0.25)
+                    if t > hook_end - 0.15: sc *= max(0, (hook_end - t) / 0.15)
+                    right = qi % 2 == 1
+                    im = bubble(q, right)
+                    paste(fr, im, (W - 60 - im.width / 2) if right else (60 + im.width / 2), 780 + qi * 150, sc)
+        for c0, c1, its, tms in checks:
+            if c0 <= t < min(c1, cta['t0'] - 0.05):
+                non = sum(1 for x in tms if x <= t + 0.05)
+                out = max(0.0, min(1.0, (min(c1, cta['t0'] - 0.05) - t) / 0.15))
+                paste(fr, checklist(lang, its, non), W / 2, 420, back((t - c0) / 0.3) * out)
         if t < hook_end:
             kw = nhw if t > phrases[0]['t1'] else max(1, min(nhw, int(1 + (t - phrases[0]['t0']) / hook_dur_words * nhw * 1.15)))
             im = hook_frame(hook_txt, kw)
@@ -281,7 +421,7 @@ def build(lang, body, hook, test=None, plan_only=False):
             eu = (t - 0.25) / 0.3
             if eu > 0: paste(fr, hook_emo, W / 2 + im.width / 2 - 30, HOOK_Y - im.height / 2 - 10, back(eu), rot=12 * math.sin(t * 5))
         for e0, e1, im in emos:
-            if e0 <= t < e1 and t < cta['t0'] - 0.1:
+            if e0 <= t < e1 and t < cta['t0'] - 0.1 and not any(c0 <= t < c1 for c0, c1, _, _ in checks) and not any(x[0] <= t < x[1] for x in bigs):
                 u = (t - e0) / 0.25; sc = back(u) * 0.75
                 if e1 - t < 0.12: sc *= (e1 - t) / 0.12
                 paste(fr, im, EMO_POS[0], EMO_POS[1] + 10 * math.sin(t * 4), sc, rot=8 * math.sin(t * 3))
