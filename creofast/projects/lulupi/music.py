@@ -35,7 +35,9 @@ def pluck(f, n, d=0.25):
     s = 0.6 * np.sin(2 * np.pi * f * t) + 0.25 * np.sin(4 * np.pi * f * t) + 0.12 * np.sin(6 * np.pi * f * t)
     return s * env(n, 0.004, d)
 
-def make(total, path, seed=0):
+def make(total, path, seed=0, bpm=None, soft=False):
+    global BEAT
+    if bpm: BEAT = 60 / bpm
     rng = np.random.default_rng(seed)
     prog = PROGS[seed % len(PROGS)]
     N = int(total * SR) + SR
@@ -48,17 +50,24 @@ def make(total, path, seed=0):
         o = int(b * BEAT * SR)
         if o >= N: break
         def add(x, at, g):
+            if at >= N: return
             e = min(N, at + len(x)); mix[at:e] += g * x[:e - at]
-        add(K, o, 0.9)
-        if b % 2 == 1: add(clap_src, o, 0.35)
-        add(hat, o + int(BEAT / 2 * SR), 0.18)
-        if b % 4 == 3: add(hat, o + int(BEAT * 0.75 * SR), 0.12)
+        if soft:
+            if b % 2 == 0: add(K, o, 0.45)
+            add(hat, o + int(BEAT / 2 * SR), 0.07)
+        else:
+            add(K, o, 0.9)
+            if b % 2 == 1: add(clap_src, o, 0.35)
+            add(hat, o + int(BEAT / 2 * SR), 0.18)
+            if b % 4 == 3: add(hat, o + int(BEAT * 0.75 * SR), 0.12)
         ch = prog[(b // 4) % 4]
         root = NOTES[ch[0]] / 2
-        add(pluck(root, int(BEAT * SR), 0.18), o, 0.35)                     # бас
+        add(pluck(root, int(BEAT * SR), 0.5 if soft else 0.18), o, 0.30)
+        if soft and b % 4 == 0:
+            for nt in ch: add(pluck(NOTES[nt], int(BEAT * 4 * SR), 1.2), o, 0.10)                     # бас
         for k in range(2):                                                     # арпеджио 8-лер
             f = NOTES[ch[(b * 2 + k) % 3]] * 2
-            add(pluck(f, int(BEAT / 2 * SR), 0.12), o + int(k * BEAT / 2 * SR), 0.16)
+            add(pluck(f, int(BEAT / 2 * SR), 0.3 if soft else 0.12), o + int(k * BEAT / 2 * SR), 0.10 if soft else 0.16)
     mix = mix[:int(total * SR)]
     # соңында 1 с fade out
     fo = int(1.0 * SR); mix[-fo:] *= np.linspace(1, 0, fo)
